@@ -38,7 +38,4 @@ trait BaseDataTypeTest extends BaseTiSparkTest {
     logger.info(query)
     runTest(query)
   }
-
-  // initialize test framework
-  SharedSQLContext.init()
 }

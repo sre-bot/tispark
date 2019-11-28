@@ -65,7 +65,4 @@ trait MultiColumnDataTypeTest extends BaseTiSparkTest {
       }
     }
   }
-
-  // initialize test framework
-  SharedSQLContext.init()
 }

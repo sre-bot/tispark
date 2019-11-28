@@ -21,7 +21,6 @@ import java.io.File
 import java.sql.{Connection, Date, Statement}
 import java.util.{Locale, Properties, TimeZone}
 
-import com.pingcap.tikv.TiSession
 import com.pingcap.tispark.TiConfigConst.PD_ADDRESSES
 import com.pingcap.tispark.TiDBUtils
 import com.pingcap.tispark.statistics.StatisticsManager
@@ -29,9 +28,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.test.TestConstants._
 import org.apache.spark.sql.test.Utils._
-import org.apache.spark.{SparkConf, SparkContext, SparkFunSuite}
+import org.apache.spark.{SharedSparkContext, SparkConf, SparkFunSuite}
 import org.joda.time.DateTimeZone
-import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.Eventually
 import org.slf4j.Logger
 
@@ -43,8 +41,10 @@ import scala.collection.mutable.ArrayBuffer
  *
  * `tidb_config.properties` must be provided in test resources folder
  */
-trait SharedSQLContext extends SparkFunSuite with Eventually with BeforeAndAfterAll {
+trait SharedSQLContext extends SparkFunSuite with Eventually with SharedSparkContext {
   protected def spark: SparkSession = SharedSQLContext.spark
+
+  override protected def conf: SparkConf = SharedSQLContext.conf
 
   protected def ti: TiContext = SharedSQLContext.ti
 
@@ -76,10 +76,12 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with BeforeAndAfter
 
   protected def defaultTimeZone: TimeZone = SharedSQLContext.timeZone
 
-  protected def refreshConnections(): Unit = SharedSQLContext.refreshConnections(false)
+  protected def refreshConnections(): Unit = refreshConnections(false)
 
-  protected def refreshConnections(isHiveEnabled: Boolean): Unit =
-    SharedSQLContext.refreshConnections(isHiveEnabled)
+  protected def refreshConnections(isHiveEnabled: Boolean): Unit = {
+    stop()
+    init(forceNotLoad = true, isHiveEnabled = isHiveEnabled)
+  }
 
   protected def loadSQLFile(directory: String, file: String): Unit =
     SharedSQLContext.loadSQLFile(directory, file)
@@ -113,15 +115,32 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with BeforeAndAfter
    */
   protected implicit def sqlContext: SQLContext = spark.sqlContext
 
-  protected implicit def sc: SparkContext = spark.sqlContext.sparkContext
+  private def init(forceNotLoad: Boolean = false,
+                   isHiveEnabled: Boolean = false,
+                   isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
+    initializeConf(isHiveEnabled, isTidbConfigPropertiesInjectedToSparkEnabled)
+    initializeConnection(forceNotLoad)
+  }
+
+  private def initializeConf(isHiveEnabled: Boolean = false,
+                             isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
+    SharedSQLContext.initializeConf(isHiveEnabled, isTidbConfigPropertiesInjectedToSparkEnabled)
+  }
+
+  private def initializeConnection(forceNotLoad: Boolean = false): Unit = {
+    SharedSQLContext.initializeSparkSession()
+    SharedSQLContext.initializeTiDBConnection(forceNotLoad)
+  }
 
   override protected def beforeAll(): Unit = {
-    super.beforeAll()
     try {
-      SharedSQLContext.init(
+      initializeConf(
         isHiveEnabled = enableHive,
         isTidbConfigPropertiesInjectedToSparkEnabled = enableTidbConfigPropertiesInjectedToSpark
       )
+      // initialize spark context
+      super.beforeAll()
+      initializeConnection()
     } catch {
       case e: Throwable =>
         e.printStackTrace()
@@ -133,8 +152,8 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with BeforeAndAfter
   }
 
   override protected def afterAll(): Unit = {
-    super.afterAll()
     stop()
+    super.afterAll()
   }
 }
 
@@ -150,7 +169,7 @@ object SharedSQLContext extends Logging {
   Locale.setDefault(Locale.CHINA)
 
   protected val logger: Logger = log
-  protected var sparkConf: SparkConf = _
+  protected var conf: SparkConf = _
   private var _spark: SparkSession = _
   private var _tidbConf: Properties = _
   private var _tidbConnection: Connection = _
@@ -169,6 +188,7 @@ object SharedSQLContext extends Logging {
   protected var pdAddresses: String = _
   protected var generateData: Boolean = _
   protected var generateDataSeed: Option[Long] = None
+  protected var _isHiveEnabled: Boolean = _
   protected var enableTiFlashTest: Boolean = _
 
   protected implicit def spark: SparkSession = _spark
@@ -200,10 +220,6 @@ object SharedSQLContext extends Logging {
       }
 
       if (_ti != null) {
-        _ti.sparkSession.sessionState.catalog.reset()
-        _ti.meta.close()
-        _ti.sparkSession.close()
-        _ti.tiSession.close()
         _ti = null
       }
     }
@@ -227,11 +243,6 @@ object SharedSQLContext extends Logging {
 
   protected var _sparkSession: SparkSession = _
 
-  def refreshConnections(isHiveEnabled: Boolean): Unit = {
-    stop()
-    init(forceNotLoad = true, isHiveEnabled = isHiveEnabled)
-  }
-
   /**
    * Initialize the [[TestSparkSession]].  Generally, this is just called from
    * beforeAll; however, in test using styles other than FunSuite, there is
@@ -241,10 +252,14 @@ object SharedSQLContext extends Logging {
    * 'initializeSession' between a 'describe' and an 'it' call than it does to
    * call 'beforeAll'.
    */
-  protected def initializeSparkSession(): Unit =
+  protected def initializeSparkSession(): Unit = {
+    if (_sparkSession == null) {
+      _sparkSession = new TestSparkSession(SharedSparkContext.getInstance(), _isHiveEnabled).session
+    }
     if (_spark == null) {
       _spark = _sparkSession
     }
+  }
 
   protected def initStatistics(): Unit = {
     _tidbConnection.setCatalog("tispark_test")
@@ -381,7 +396,6 @@ object SharedSQLContext extends Logging {
     }
 
   private def initializeSparkConf(
-    isHiveEnabled: Boolean = false,
     isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true
   ): Unit =
     if (_tidbConf == null) {
@@ -410,7 +424,7 @@ object SharedSQLContext extends Logging {
       runTPCDS = tpcdsDBName != ""
 
       _tidbConf = prop
-      sparkConf = new SparkConf()
+      conf = new SparkConf(false)
 
       generateData = getOrElse(_tidbConf, SHOULD_GENERATE_DATA, "true").toLowerCase.toBoolean
 
@@ -427,20 +441,20 @@ object SharedSQLContext extends Logging {
       }
 
       if (isTidbConfigPropertiesInjectedToSparkEnabled) {
-        sparkConf.set(PD_ADDRESSES, pdAddresses)
-        sparkConf.set(ENABLE_AUTO_LOAD_STATISTICS, "true")
-        sparkConf.set(ALLOW_INDEX_READ, getFlagOrTrue(prop, ALLOW_INDEX_READ).toString)
-        sparkConf.set("spark.sql.decimalOperations.allowPrecisionLoss", "false")
-        sparkConf.set(REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL)
-        sparkConf.set("spark.sql.extensions", "org.apache.spark.sql.TiExtensions")
-        sparkConf.set(DB_PREFIX, dbPrefix)
+        conf.set(PD_ADDRESSES, pdAddresses)
+        conf.set(ENABLE_AUTO_LOAD_STATISTICS, "true")
+        conf.set(ALLOW_INDEX_READ, getFlagOrTrue(prop, ALLOW_INDEX_READ).toString)
+        conf.set("spark.sql.decimalOperations.allowPrecisionLoss", "false")
+        conf.set(REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL)
+        conf.set("spark.sql.extensions", "org.apache.spark.sql.TiExtensions")
+        conf.set(DB_PREFIX, dbPrefix)
       }
 
-      sparkConf.set("spark.tispark.write.allow_spark_sql", "true")
-      sparkConf.set("spark.tispark.write.without_lock_table", "true")
-      sparkConf.set("spark.tispark.tikv.region_split_size_in_mb", "1")
+      conf.set("spark.tispark.write.allow_spark_sql", "true")
+      conf.set("spark.tispark.write.without_lock_table", "true")
+      conf.set("spark.tispark.tikv.region_split_size_in_mb", "1")
 
-      if (isHiveEnabled) {
+      if (_isHiveEnabled) {
         // delete meta store directory to avoid multiple derby instances SPARK-10872
         import java.io.IOException
 
@@ -452,9 +466,13 @@ object SharedSQLContext extends Logging {
             e.printStackTrace()
         }
       }
-
-      _sparkSession = new TestSparkSession(sparkConf, isHiveEnabled).session
     }
+
+  def initializeConf(isHiveEnabled: Boolean = false,
+                     isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
+    _isHiveEnabled = isHiveEnabled
+    initializeSparkConf(isTidbConfigPropertiesInjectedToSparkEnabled)
+  }
 
   /**
    * Make sure the [[TestSparkSession]] is initialized before any tests are run.
@@ -462,7 +480,8 @@ object SharedSQLContext extends Logging {
   def init(forceNotLoad: Boolean = false,
            isHiveEnabled: Boolean = false,
            isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
-    initializeSparkConf(isHiveEnabled, isTidbConfigPropertiesInjectedToSparkEnabled)
+    _isHiveEnabled = isHiveEnabled
+    initializeSparkConf(isTidbConfigPropertiesInjectedToSparkEnabled)
     initializeSparkSession()
     initializeTiDBConnection(forceNotLoad)
   }
@@ -474,9 +493,14 @@ object SharedSQLContext extends Logging {
     tiContextCache.clear()
 
     if (_spark != null) {
-      _spark.sessionState.catalog.reset()
-      _spark.close()
-      _spark = null
+      try {
+        SparkSession.clearDefaultSession()
+        SparkSession.clearActiveSession()
+      } catch {
+        case _: Throwable =>
+      } finally {
+        _spark = null
+      }
     }
 
     if (_statement != null) {
