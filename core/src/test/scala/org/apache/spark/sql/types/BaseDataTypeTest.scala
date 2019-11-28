@@ -38,4 +38,11 @@ trait BaseDataTypeTest extends BaseTiSparkTest {
     logger.info(query)
     runTest(query)
   }
+
+  def check(): Unit
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    check()
+  }
 }

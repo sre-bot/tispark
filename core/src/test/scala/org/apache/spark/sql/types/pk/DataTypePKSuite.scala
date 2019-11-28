@@ -49,6 +49,5 @@ class DataTypePKSuite extends BaseDataTypeTest with RunUnitDataTypeTestAction {
     }
   }
 
-  check()
   test()
 }

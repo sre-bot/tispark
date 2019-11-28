@@ -59,6 +59,5 @@ class MultiColumnDataTypeSuite
     }
   }
 
-  check()
   test()
 }

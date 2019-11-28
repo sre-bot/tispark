@@ -47,6 +47,5 @@ class DataTypeExampleTest extends BaseDataTypeTest with RunUnitDataTypeTestActio
     }
   }
 
-  check()
   test()
 }

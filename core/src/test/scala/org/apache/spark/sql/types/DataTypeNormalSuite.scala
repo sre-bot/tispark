@@ -48,6 +48,5 @@ class DataTypeNormalSuite extends BaseDataTypeTest with RunUnitDataTypeTestActio
     }
   }
 
-  check()
   test()
 }

@@ -65,4 +65,11 @@ trait MultiColumnDataTypeTest extends BaseTiSparkTest {
       }
     }
   }
+
+  def check(): Unit
+
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    check()
+  }
 }
