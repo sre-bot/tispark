@@ -88,8 +88,6 @@ trait MultiColumnPKDataTypeSuites
 
   def getId: Int = getClass.getName.substring(getClass.getName.length - 2).toInt
 
-  def check(): Unit = ???
-
   override def test(): Unit = {
     currentTest.foreach {
       case (i, j) =>

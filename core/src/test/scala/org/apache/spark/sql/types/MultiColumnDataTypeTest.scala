@@ -66,7 +66,5 @@ trait MultiColumnDataTypeTest extends BaseTiSparkTest {
     }
   }
 
-  def check(): Unit
-
   init()
 }
