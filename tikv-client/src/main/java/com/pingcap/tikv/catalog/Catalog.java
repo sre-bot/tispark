@@ -134,7 +134,7 @@ public class Catalog implements AutoCloseable {
     }
   }
 
-  private void reloadCache() {
+  public void reloadCache() {
     reloadCache(false);
   }
 

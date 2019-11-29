@@ -37,44 +37,39 @@ import scala.collection.mutable.ArrayBuffer
 
 /**
  * This trait manages basic TiSpark, Spark JDBC, TiDB JDBC
- * connection resource and relevant configurations.
+ * tidbConn resource and relevant configurations.
  *
  * `tidb_config.properties` must be provided in test resources folder
  */
-trait SharedSQLContext extends SparkFunSuite with Eventually with SharedSparkContext {
-  protected def spark: SparkSession = SharedSQLContext.spark
+trait SharedSQLContext extends SparkFunSuite with Eventually with Logging with SharedSparkContext {
+  override protected val logger: Logger = SharedSQLContext.logger
 
-  override protected def conf: SparkConf = SharedSQLContext.conf
-
-  protected def ti: TiContext = SharedSQLContext.ti
-
-  protected def tidbStmt: Statement = SharedSQLContext.tidbStmt
-
-  protected def tidbConn: Connection = SharedSQLContext.tidbConn
-
-  protected def tidbOptions: Map[String, String] = SharedSQLContext.tidbOptions
+  protected def spark: SparkSession = _spark
 
   protected def sql: String => DataFrame = spark.sql _
 
+  // get the current TiContext lazily
+  protected def ti: TiContext = tiContextCache.get()
+
+  protected def tidbStmt: Statement = _statement
+
+  protected def tidbConn: Connection = _tidbConnection
+
+  protected def tidbOptions: Map[String, String] = SharedSQLContext.tidbOptions
+
   protected def jdbcUrl: String = SharedSQLContext.jdbcUrl
 
-  protected def tpchDBName: String = SharedSQLContext.tpchDBName
+  protected def tidbAddr: String = SharedSQLContext.tidbAddr
 
-  protected def tpcdsDBName: String = SharedSQLContext.tpcdsDBName
+  protected def tidbPassword: String = SharedSQLContext.tidbPassword
 
-  protected def runTPCH: Boolean = SharedSQLContext.runTPCH
+  protected def tidbPort: Int = SharedSQLContext.tidbPort
 
-  protected def runTPCDS: Boolean = SharedSQLContext.runTPCDS
-
-  protected def dbPrefix: String = SharedSQLContext.dbPrefix
-
-  protected def timeZoneOffset: String = SharedSQLContext.timeZoneOffset
-
-  protected def initStatistics(): Unit = SharedSQLContext.initStatistics()
-
-  protected def initializeTimeZone(): Unit = SharedSQLContext.initializeTimeZone()
+  protected def tidbUser: String = SharedSQLContext.tidbUser
 
   protected def defaultTimeZone: TimeZone = SharedSQLContext.timeZone
+
+  protected def timeZoneOffset: String = SharedSQLContext.timeZoneOffset
 
   protected def refreshConnections(): Unit = refreshConnections(false)
 
@@ -83,53 +78,19 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with SharedSparkCon
     init(forceNotLoad = true, isHiveEnabled = isHiveEnabled)
   }
 
-  protected def loadSQLFile(directory: String, file: String): Unit =
-    SharedSQLContext.loadSQLFile(directory, file)
-
-  protected def stop(): Unit = SharedSQLContext.stop()
-
-  protected def paramConf(): Properties = SharedSQLContext._tidbConf
-
   protected var enableHive: Boolean = false
 
   protected var enableTidbConfigPropertiesInjectedToSpark: Boolean = true
-
-  protected def tidbUser: String = SharedSQLContext.tidbUser
-
-  protected def tidbPassword: String = SharedSQLContext.tidbPassword
-
-  protected def tidbAddr: String = SharedSQLContext.tidbAddr
-
-  protected def tidbPort: Int = SharedSQLContext.tidbPort
-
-  protected def pdAddresses: String = SharedSQLContext.pdAddresses
 
   protected def generateData: Boolean = SharedSQLContext.generateData
 
   protected def generateDataSeed: Long = SharedSQLContext.generateDataSeed.get
 
-  protected def enableTiFlashTest: Boolean = SharedSQLContext.enableTiFlashTest
-
-  /**
-   * The [[TestSparkSession]] to use for all tests in this suite.
-   */
-  protected implicit def sqlContext: SQLContext = spark.sqlContext
-
-  private def init(forceNotLoad: Boolean = false,
-                   isHiveEnabled: Boolean = false,
-                   isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
+  protected def init(forceNotLoad: Boolean = false,
+                     isHiveEnabled: Boolean = false,
+                     isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
     initializeConf(isHiveEnabled, isTidbConfigPropertiesInjectedToSparkEnabled)
-    initializeConnection(forceNotLoad)
-  }
-
-  private def initializeConf(isHiveEnabled: Boolean = false,
-                             isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
-    SharedSQLContext.initializeConf(isHiveEnabled, isTidbConfigPropertiesInjectedToSparkEnabled)
-  }
-
-  private def initializeConnection(forceNotLoad: Boolean = false): Unit = {
-    SharedSQLContext.initializeSparkSession()
-    SharedSQLContext.initializeTiDBConnection(forceNotLoad)
+    initializeTiDBConnection(forceNotLoad)
   }
 
   override protected def beforeAll(): Unit = {
@@ -140,7 +101,8 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with SharedSparkCon
       )
       // initialize spark context
       super.beforeAll()
-      initializeConnection()
+      initializeSparkSession()
+      initializeTiDBConnection()
     } catch {
       case e: Throwable =>
         e.printStackTrace()
@@ -155,49 +117,26 @@ trait SharedSQLContext extends SparkFunSuite with Eventually with SharedSparkCon
     stop()
     super.afterAll()
   }
-}
 
-object SharedSQLContext extends Logging {
-  private val timeZoneOffset = "-7:00"
-  // Timezone is fixed to a random GMT-7 for those timezone sensitive tests (timestamp_*, date_*, etc)
-  private val timeZone = TimeZone.getTimeZone("GMT-7")
-  // JDK time zone
-  TimeZone.setDefault(timeZone)
-  // Joda time zone
-  DateTimeZone.setDefault(DateTimeZone.forTimeZone(timeZone))
-  // Add Locale setting
-  Locale.setDefault(Locale.CHINA)
-
-  protected val logger: Logger = log
-  protected var conf: SparkConf = _
   private var _spark: SparkSession = _
   private var _tidbConf: Properties = _
   private var _tidbConnection: Connection = _
-  private var _tidbOptions: Map[String, String] = _
   private var _statement: Statement = _
-  protected var jdbcUrl: String = _
   protected var tpchDBName: String = _
   protected var tpcdsDBName: String = _
   protected var runTPCH: Boolean = true
   protected var runTPCDS: Boolean = false
   protected var dbPrefix: String = _
-  protected var tidbUser: String = _
-  protected var tidbPassword: String = _
-  protected var tidbAddr: String = _
-  protected var tidbPort: Int = _
   protected var pdAddresses: String = _
-  protected var generateData: Boolean = _
-  protected var generateDataSeed: Option[Long] = None
-  protected var _isHiveEnabled: Boolean = _
+  private var _isHiveEnabled: Boolean = _
   protected var enableTiFlashTest: Boolean = _
-
-  protected implicit def spark: SparkSession = _spark
 
   private class TiContextCache {
     private var _ti: TiContext = _
 
     private[test] def get(): TiContext = {
       if (_ti == null) {
+        assert(_spark != null, "Spark Session should be initialized")
         if (_spark.sessionState.planner.extraPlanningStrategies.nonEmpty &&
             _spark.sessionState.planner.extraPlanningStrategies.head
               .isInstanceOf[TiStrategy]) {
@@ -220,21 +159,13 @@ object SharedSQLContext extends Logging {
       }
 
       if (_ti != null) {
+        _ti.meta.reloadMeta()
         _ti = null
       }
     }
   }
 
   private val tiContextCache = new TiContextCache
-
-  // get the current TiContext lazily
-  protected implicit def ti: TiContext = tiContextCache.get()
-
-  protected implicit def tidbConn: Connection = _tidbConnection
-
-  protected implicit def tidbOptions: Map[String, String] = _tidbOptions
-
-  protected implicit def tidbStmt: Statement = _statement
 
   /**
    * The [[TestSparkSession]] to use for all tests in this suite.
@@ -282,6 +213,12 @@ object SharedSQLContext extends Logging {
 
   protected def loadSQLFile(directory: String, file: String): Unit = {
     val fullFileName = s"$directory/$file.sql"
+    if (_tidbConnection == null) {
+      _tidbConnection = SharedSQLContext.tidbConnection
+    }
+    if (_statement == null) {
+      _statement = SharedSQLContext.statement
+    }
     try {
       val path = getClass.getResource("/" + fullFileName).getPath
       import scala.io.Source
@@ -299,33 +236,6 @@ object SharedSQLContext extends Logging {
         )
         throw e
     }
-  }
-
-  private def initializeJDBCUrl(): Unit = {
-    tidbUser = getOrElse(_tidbConf, TiDB_USER, "root")
-
-    tidbPassword = getOrElse(_tidbConf, TiDB_PASSWORD, "")
-
-    tidbAddr = getOrElse(_tidbConf, TiDB_ADDRESS, "127.0.0.1")
-
-    tidbPort = Integer.parseInt(getOrElse(_tidbConf, TiDB_PORT, "4000"))
-
-    _tidbOptions = Map(
-      TiDB_ADDRESS -> tidbAddr,
-      TiDB_PASSWORD -> tidbPassword,
-      TiDB_PORT -> s"$tidbPort",
-      TiDB_USER -> tidbUser,
-      PD_ADDRESSES -> pdAddresses
-    )
-
-    jdbcUrl =
-      s"jdbc:mysql://address=(protocol=tcp)(host=$tidbAddr)(port=$tidbPort)/?user=$tidbUser&password=$tidbPassword" +
-        s"&useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false" +
-        s"&rewriteBatchedStatements=true&autoReconnect=true&failOverReadOnly=false&maxReconnects=10" +
-        s"&allowMultiQueries=true&serverTimezone=${timeZone.getDisplayName}"
-
-    _tidbConnection = TiDBUtils.createConnectionFactory(jdbcUrl)()
-    _statement = _tidbConnection.createStatement()
   }
 
   private def queryTiDBViaJDBC(query: String): List[List[Any]] = {
@@ -375,7 +285,10 @@ object SharedSQLContext extends Logging {
   private def initializeTiDBConnection(forceNotLoad: Boolean = false): Unit =
     if (_tidbConnection == null) {
 
-      initializeJDBCUrl()
+      SharedSQLContext.initializeJDBCUrl()
+
+      _tidbConnection = SharedSQLContext.tidbConnection
+      _statement = SharedSQLContext.statement
 
       val loadData = getOrElse(_tidbConf, SHOULD_LOAD_DATA, "auto").toLowerCase
 
@@ -397,58 +310,25 @@ object SharedSQLContext extends Logging {
 
   private def initializeSparkConf(
     isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true
-  ): Unit =
+  ): Unit = {
     if (_tidbConf == null) {
-      val confStream = Thread
-        .currentThread()
-        .getContextClassLoader
-        .getResourceAsStream("tidb_config.properties")
-
-      val prop = new Properties()
-      if (confStream != null) {
-        prop.load(confStream)
-      }
+      _tidbConf = SharedSQLContext.tidbConf
 
       import com.pingcap.tispark.TiConfigConst._
 
-      pdAddresses = getOrElse(prop, PD_ADDRESSES, "127.0.0.1:2379")
-      dbPrefix = getOrElse(prop, DB_PREFIX, "tidb_")
+      pdAddresses = getOrElse(_tidbConf, PD_ADDRESSES, "127.0.0.1:2379")
+      dbPrefix = getOrElse(_tidbConf, DB_PREFIX, "tidb_")
 
       // run TPC-H tests by default and disable TPC-DS tests by default
-      tpchDBName = getOrElse(prop, TPCH_DB_NAME, "tpch_test")
-      tpcdsDBName = getOrElse(prop, TPCDS_DB_NAME, "")
+      tpchDBName = getOrElse(_tidbConf, TPCH_DB_NAME, "tpch_test")
+      tpcdsDBName = getOrElse(_tidbConf, TPCDS_DB_NAME, "")
 
-      enableTiFlashTest = getOrElse(prop, ENABLE_TIFLASH_TEST, "false").toBoolean
+      enableTiFlashTest = getOrElse(_tidbConf, ENABLE_TIFLASH_TEST, "false").toBoolean
 
       runTPCH = tpchDBName != ""
       runTPCDS = tpcdsDBName != ""
 
-      _tidbConf = prop
       conf = new SparkConf(false)
-
-      generateData = getOrElse(_tidbConf, SHOULD_GENERATE_DATA, "true").toLowerCase.toBoolean
-
-      if (generateDataSeed.isEmpty) {
-        var tmpSeed = getOrElse(_tidbConf, GENERATE_DATA_SEED, "1234").toLong
-        if (tmpSeed == 0) {
-          tmpSeed = System.currentTimeMillis()
-        }
-        generateDataSeed = Some(tmpSeed)
-
-        if (generateData) {
-          logger.info(s"generate data is enabled and seed is ${generateDataSeed.get}")
-        }
-      }
-
-      if (isTidbConfigPropertiesInjectedToSparkEnabled) {
-        conf.set(PD_ADDRESSES, pdAddresses)
-        conf.set(ENABLE_AUTO_LOAD_STATISTICS, "true")
-        conf.set(ALLOW_INDEX_READ, getFlagOrTrue(prop, ALLOW_INDEX_READ).toString)
-        conf.set("spark.sql.decimalOperations.allowPrecisionLoss", "false")
-        conf.set(REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL)
-        conf.set("spark.sql.extensions", "org.apache.spark.sql.TiExtensions")
-        conf.set(DB_PREFIX, dbPrefix)
-      }
 
       conf.set("spark.tispark.write.allow_spark_sql", "true")
       conf.set("spark.tispark.write.without_lock_table", "true")
@@ -467,23 +347,22 @@ object SharedSQLContext extends Logging {
         }
       }
     }
+    if (isTidbConfigPropertiesInjectedToSparkEnabled) {
+      import com.pingcap.tispark.TiConfigConst._
+      conf.set(PD_ADDRESSES, pdAddresses)
+      conf.set(ENABLE_AUTO_LOAD_STATISTICS, "true")
+      conf.set(ALLOW_INDEX_READ, getFlagOrTrue(_tidbConf, ALLOW_INDEX_READ).toString)
+      conf.set("spark.sql.decimalOperations.allowPrecisionLoss", "false")
+      conf.set(REQUEST_ISOLATION_LEVEL, SNAPSHOT_ISOLATION_LEVEL)
+      conf.set("spark.sql.extensions", "org.apache.spark.sql.TiExtensions")
+      conf.set(DB_PREFIX, dbPrefix)
+    }
+  }
 
   def initializeConf(isHiveEnabled: Boolean = false,
                      isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
     _isHiveEnabled = isHiveEnabled
     initializeSparkConf(isTidbConfigPropertiesInjectedToSparkEnabled)
-  }
-
-  /**
-   * Make sure the [[TestSparkSession]] is initialized before any tests are run.
-   */
-  def init(forceNotLoad: Boolean = false,
-           isHiveEnabled: Boolean = false,
-           isTidbConfigPropertiesInjectedToSparkEnabled: Boolean = true): Unit = {
-    _isHiveEnabled = isHiveEnabled
-    initializeSparkConf(isTidbConfigPropertiesInjectedToSparkEnabled)
-    initializeSparkSession()
-    initializeTiDBConnection(forceNotLoad)
   }
 
   /**
@@ -497,9 +376,10 @@ object SharedSQLContext extends Logging {
         SparkSession.clearDefaultSession()
         SparkSession.clearActiveSession()
       } catch {
-        case _: Throwable =>
+        case e: Throwable => println(e)
       } finally {
         _spark = null
+        _sparkSession = null
       }
     }
 
@@ -525,5 +405,88 @@ object SharedSQLContext extends Logging {
     if (_tidbConf != null) {
       _tidbConf = null
     }
+  }
+}
+
+object SharedSQLContext extends Logging {
+  protected val timeZoneOffset = "-7:00"
+  // Timezone is fixed to a random GMT-7 for those timezone sensitive tests (timestamp_*, date_*, etc)
+  private val timeZone = TimeZone.getTimeZone("GMT-7")
+  // JDK time zone
+  TimeZone.setDefault(timeZone)
+  // Joda time zone
+  DateTimeZone.setDefault(DateTimeZone.forTimeZone(timeZone))
+  // Add Locale setting
+  Locale.setDefault(Locale.CHINA)
+
+  protected val logger: Logger = log
+
+  protected val tidbConf: Properties = initializeTiDBConf()
+
+  protected val generateData: Boolean =
+    getOrElse(tidbConf, SHOULD_GENERATE_DATA, "true").toLowerCase.toBoolean
+
+  protected val generateDataSeed: Option[Long] = {
+    var tmpSeed = getOrElse(tidbConf, GENERATE_DATA_SEED, "1234").toLong
+    if (tmpSeed == 0) {
+      tmpSeed = System.currentTimeMillis()
+    }
+    if (generateData) {
+      logger.info(s"generate data is enabled and seed is $tmpSeed")
+    }
+    Some(tmpSeed)
+  }
+
+  protected var tidbUser: String = _
+  protected var tidbPassword: String = _
+  protected var tidbAddr: String = _
+  protected var tidbPort: Int = _
+  protected var pdAddresses: String = _
+  protected var tidbOptions: Map[String, String] = _
+  protected var tidbConnection: Connection = _
+  protected var statement: Statement = _
+  protected var jdbcUrl: String = _
+
+  initializeJDBCUrl()
+
+  def initializeTiDBConf(): Properties = {
+    val confStream = Thread
+      .currentThread()
+      .getContextClassLoader
+      .getResourceAsStream("tidb_config.properties")
+
+    val prop = new Properties()
+    if (confStream != null) {
+      prop.load(confStream)
+    }
+    prop
+  }
+
+  private def initializeJDBCUrl(): Unit = {
+    tidbUser = getOrElse(tidbConf, TiDB_USER, "root")
+
+    tidbPassword = getOrElse(tidbConf, TiDB_PASSWORD, "")
+
+    tidbAddr = getOrElse(tidbConf, TiDB_ADDRESS, "127.0.0.1")
+
+    tidbPort = Integer.parseInt(getOrElse(tidbConf, TiDB_PORT, "4000"))
+
+    tidbOptions = Map(
+      TiDB_ADDRESS -> tidbAddr,
+      TiDB_PASSWORD -> tidbPassword,
+      TiDB_PORT -> s"$tidbPort",
+      TiDB_USER -> tidbUser,
+      PD_ADDRESSES -> pdAddresses
+    )
+
+    jdbcUrl =
+      s"jdbc:mysql://address=(protocol=tcp)(host=$tidbAddr)(port=$tidbPort)/?user=$tidbUser&password=$tidbPassword" +
+        s"&useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false" +
+        s"&rewriteBatchedStatements=true&autoReconnect=true&failOverReadOnly=false&maxReconnects=10" +
+        s"&allowMultiQueries=true&serverTimezone=${timeZone.getDisplayName}"
+
+    tidbConnection = TiDBUtils.createConnectionFactory(jdbcUrl)()
+    statement = tidbConnection.createStatement()
+
   }
 }

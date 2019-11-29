@@ -45,4 +45,6 @@ trait BaseDataTypeTest extends BaseTiSparkTest {
     super.beforeAll()
     check()
   }
+
+  init()
 }

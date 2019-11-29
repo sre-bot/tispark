@@ -22,7 +22,7 @@ trait SharedSparkContext extends BeforeAndAfterAll with BeforeAndAfterEach { sel
 
   def sc: SparkContext = _sc
 
-  protected def conf: SparkConf = new SparkConf(false)
+  protected var conf: SparkConf = new SparkConf(false)
 
   protected def initializeContext(): Unit = {
     if (null == _sc) {
@@ -37,7 +37,7 @@ trait SharedSparkContext extends BeforeAndAfterAll with BeforeAndAfterEach { sel
 
   override protected def afterAll(): Unit = {
     try {
-      SharedSparkContext.stop(_sc)
+      SharedSparkContext.stop()
     } finally {
       super.afterAll()
     }
@@ -50,9 +50,10 @@ object SharedSparkContext {
 
   def getInstance(): SparkContext = _sc
 
-  def stop(sc: SparkContext): Unit = {
-    if (sc != null) {
-      sc.stop()
+  def stop(): Unit = synchronized {
+    if (_sc != null) {
+      _sc.stop()
+      _sc = null
     }
     // To avoid RPC rebinding to the same port, since it doesn't unbind immediately on shutdown
     System.clearProperty("spark.driver.port")
